@@ -27,15 +27,6 @@ if errorlevel 1 (
   copy /y requirements.txt .venv\requirements.installed >nul
 )
 
-rem Subtitle translation runs on Ollama; the server starts it and pulls the
-rem model itself, so installing it is the only setup step.
-where ollama >nul 2>nul
-if errorlevel 1 if not exist "%LOCALAPPDATA%\Programs\Ollama\ollama.exe" (
-  echo Ollama not found - installing it for subtitle translation...
-  winget install -e --id Ollama.Ollama --silent --accept-package-agreements --accept-source-agreements
-  if errorlevel 1 echo Ollama install failed - get it from https://ollama.com/download to enable translation.
-)
-
 echo.
 echo Starting scene labeler on http://127.0.0.1:8756
 echo First start downloads the tagger model (~1.2 GB) - keep this window open.

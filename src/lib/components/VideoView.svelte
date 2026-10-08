@@ -12,16 +12,8 @@
     type Scene,
     type SceneData,
   } from '../scenes';
-  import { resolveSceneAnalysisMode, fetchLabelerHealth, labelerUrl } from '../labeler';
-  import {
-    generateSubtitles,
-    getStoredSubtitles,
-    loadSubtitleSettings,
-    subtitleEvents,
-    subtitleJobs,
-    subtitleLangLabel,
-    subtitleStageLabel,
-  } from '../subtitles.svelte';
+  import { resolveSceneAnalysisMode } from '../labeler';
+  import { getStoredSubtitles, subtitleLangLabel, uploadSubtitleFile } from '../subtitles';
   import { THUMB_FOLDER, saveThumbnailFrame, regenerateThumbnail } from '../thumbnails';
   import type { Storage, MutableFile, File as MegaFile } from 'megajs';
   import { showToast } from '../toast.svelte';
@@ -169,45 +161,39 @@
 
   // --- Subtitles ---
   let subtitleTracks = $state<{ lang: string; url: string }[]>([]);
-  const subtitleJob = $derived(subtitleJobs[node.id]);
+  let subtitleVersion = $state(0);
+  let shownLang = $state<string | null>(null);
+  let subtitleUploading = $state(false);
+  let subtitleInput: HTMLInputElement | undefined = $state();
 
   $effect(() => {
     const id = node.id;
     const storage = (node.node as unknown as { storage?: Storage }).storage;
+    subtitleVersion;
     let cancelled = false;
     let urls: string[] = [];
-    const load = () =>
-      getStoredSubtitles(id, storage).then((list) => {
-        if (cancelled) return;
-        urls.forEach((u) => URL.revokeObjectURL(u));
-        const next = list.map((s) => ({
-          lang: s.lang,
-          url: URL.createObjectURL(new Blob([s.vtt], { type: 'text/vtt' })),
-        }));
-        urls = next.map((t) => t.url);
-        subtitleTracks = next;
-      });
-    subtitleTracks = [];
-    load();
-    // Picks up a job that finished while this view was closed or reopened.
-    const onSubtitles = (e: Event) => {
-      if ((e as CustomEvent).detail === id) load();
-    };
-    subtitleEvents.addEventListener('subtitles', onSubtitles);
+    getStoredSubtitles(id, storage).then((list) => {
+      if (cancelled) return;
+      const next = list.map((s) => ({
+        lang: s.lang,
+        url: URL.createObjectURL(new Blob([s.vtt], { type: 'text/vtt' })),
+      }));
+      urls = next.map((t) => t.url);
+      subtitleTracks = next;
+    });
     return () => {
       cancelled = true;
-      subtitleEvents.removeEventListener('subtitles', onSubtitles);
       urls.forEach((u) => URL.revokeObjectURL(u));
     };
   });
 
   // Tracks appended after the element loaded ignore `default`, so pick the
-  // visible one by hand: the translation target if there is one.
+  // visible one by hand: the one just uploaded, else the first.
   $effect(() => {
     const v = videoEl;
     const list = subtitleTracks;
+    const preferred = shownLang;
     if (!v || list.length === 0) return;
-    const preferred = loadSubtitleSettings().target;
     tick().then(() => {
       const tracks = Array.from(v.textTracks).filter((t) => t.kind === 'subtitles');
       const pick = tracks.find((t) => t.language === preferred) ?? tracks[0];
@@ -215,57 +201,26 @@
     });
   });
 
-  async function handleGenerateSubtitles() {
-    if (subtitleJob) return;
+  async function handleSubtitleFile(e: Event) {
+    const input = e.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = '';
+    if (!file || subtitleUploading) return;
     const storage = (node.node as unknown as { storage?: Storage }).storage;
     if (!storage) {
-      showToast('Cannot generate subtitles: storage unavailable');
+      showToast('Cannot upload subtitles: storage unavailable');
       return;
     }
-    if (isTransportStream(node.name)) {
-      showToast('Subtitles are not supported for MPEG-TS files');
-      return;
-    }
-    const health = await fetchLabelerHealth();
-    if (!health) {
-      showToast(`Scene AI is not reachable at ${labelerUrl()}`);
-      return;
-    }
-    if (!health.subtitles) {
-      showToast('Scene AI server is outdated — restart run.bat to update it');
-      return;
-    }
-    // Sending the file streams it from MEGA; pause the player meanwhile so
-    // the two transfers don't trip MEGA's parallel-connection limit. The
-    // server-side work afterwards doesn't touch MEGA, so playback can resume.
-    // Translation-only runs never download, so they never pause.
-    const player = videoEl;
-    let resumePlayer = false;
-    const pause = () => {
-      resumePlayer = !!player && !player.paused && !player.ended;
-      try {
-        player?.pause();
-      } catch (_) {}
-    };
-    const resume = () => {
-      // A view closed mid-job leaves a detached element; never start it.
-      if (resumePlayer && player?.isConnected) player.play().catch(() => {});
-      resumePlayer = false;
-    };
+    subtitleUploading = true;
     try {
-      const { tracks, warning } = await generateSubtitles(storage, node.id, node.node, {
-        onTransferStart: pause,
-        onTransferEnd: resume,
-      });
-      if (warning) showToast(warning, 'warning');
-      showToast(
-        `Subtitles ready: ${tracks.map((t) => subtitleLangLabel(t.lang)).join(', ')}`,
-        'warning'
-      );
+      const track = await uploadSubtitleFile(storage, node.id, file);
+      shownLang = track.lang;
+      subtitleVersion++;
+      showToast(`Subtitles added: ${subtitleLangLabel(track.lang)}`, 'warning');
     } catch (err) {
-      showToast(
-        `Subtitle generation failed: ${err instanceof Error ? err.message : String(err)}`
-      );
+      showToast(`Subtitle upload failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      subtitleUploading = false;
     }
   }
 
@@ -785,19 +740,25 @@
               <ImageUp size={16} />
             {/if}
           </button>
+          <input
+            bind:this={subtitleInput}
+            type="file"
+            accept=".srt,.vtt"
+            class="hidden"
+            onchange={handleSubtitleFile}
+          />
           <button
             type="button"
-            onclick={handleGenerateSubtitles}
-            disabled={!!subtitleJob}
-            class="text-gray-500 hover:text-gray-200 p-1 rounded shrink-0 inline-flex items-center gap-1.5 transition-opacity disabled:cursor-not-allowed {subtitleJob
+            onclick={() => subtitleInput?.click()}
+            disabled={subtitleUploading}
+            class="text-gray-500 hover:text-gray-200 p-1 rounded shrink-0 transition-opacity disabled:cursor-not-allowed {subtitleUploading
               ? 'opacity-100 text-gray-300'
               : 'opacity-60 group-hover:opacity-100'}"
-            title={subtitleTracks.length ? 'Regenerate subtitles' : 'Generate subtitles'}
-            aria-label={subtitleTracks.length ? 'Regenerate subtitles' : 'Generate subtitles'}
+            title="Upload subtitles (.srt / .vtt)"
+            aria-label="Upload subtitles"
           >
-            {#if subtitleJob}
+            {#if subtitleUploading}
               <Loader2 size={16} class="animate-spin" />
-              <span class="text-xs whitespace-nowrap">{subtitleStageLabel(subtitleJob)}</span>
             {:else}
               <Captions size={16} />
             {/if}

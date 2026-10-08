@@ -7,4 +7,3 @@ pillow
 numpy
 huggingface_hub
 requests
-faster-whisper
