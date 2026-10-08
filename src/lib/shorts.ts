@@ -1,7 +1,8 @@
 import type { Storage, File as MegaFile } from 'megajs';
 import { MegaService, type MegaNode } from './mega';
-import { findThumbFolder, THUMB_FOLDER } from './thumbnails';
+import { findThumbFolder } from './thumbnails';
 import { isTransportStream } from './stream';
+import type { ShortsScope } from './router.svelte';
 
 const SCENES_SUFFIX = '.scenes.json';
 
@@ -22,64 +23,34 @@ export function listSceneVideoIds(storage: Storage): Set<string> {
   return ids;
 }
 
-function toMegaNode(id: string, file: MegaFile): MegaNode {
-  return {
-    name: file.name || 'Unknown',
-    size: file.size,
-    type: 'file',
-    id,
-    node: file,
-  };
-}
-
 // isVideo deliberately keeps .ts (thumbnails only) — playback was removed,
-// so shorts must filter transport streams out on top of it.
+// so shorts and shuffle must filter transport streams out on top of it.
 function isPlayableVideo(name: string): boolean {
   return MegaService.isVideo(name) && !isTransportStream(name);
 }
 
-/** Candidate videos for the shorts pool (before scene-data intersection). */
+/**
+ * Playable videos in a folder (`folder`) or its whole subtree (`tree`).
+ * A missing folderId means the cloud root, so root + `tree` is every video in
+ * the account. listChildren already hides .megastream, which keeps sidecars out.
+ */
 export function collectCandidates(
   storage: Storage,
-  scope: 'all' | 'folder',
+  scope: ShortsScope,
   folderId?: string
 ): MegaNode[] {
   const files = (storage as unknown as { files: Record<string, MegaFile> }).files;
-
-  if (scope === 'folder') {
-    const folder = folderId ? files[folderId] : undefined;
-    if (!folder?.directory) return [];
-    // The whole subtree counts, not just direct children.
-    const out: MegaNode[] = [];
-    const walk = (f: MegaFile) => {
-      for (const n of MegaService.listChildren(f)) {
-        if (n.type === 'folder') walk(n.node);
-        else if (isPlayableVideo(n.name)) out.push(n);
-      }
-    };
-    walk(folder);
-    return out;
-  }
-
-  const root = storage.root as unknown as MegaFile;
+  const folder = folderId ? files[folderId] : (storage.root as unknown as MegaFile);
+  if (!folder?.directory) return [];
   const out: MegaNode[] = [];
-  for (const [id, file] of Object.entries(files)) {
-    if (file.directory || !isPlayableVideo(file.name || '')) continue;
-    // Only files whose ancestor chain reaches root without passing through
-    // .megastream count — this drops sidecars and Rubbish Bin/inbox contents
-    // (their chains never reach the cloud root).
-    let cur: MegaFile | undefined = file.parent;
-    let reachesRoot = false;
-    while (cur) {
-      if (cur.directory && cur.name === THUMB_FOLDER) break;
-      if (cur === root) {
-        reachesRoot = true;
-        break;
-      }
-      cur = cur.parent;
+  const walk = (f: MegaFile) => {
+    for (const n of MegaService.listChildren(f)) {
+      if (n.type === 'folder') {
+        if (scope === 'tree') walk(n.node);
+      } else if (isPlayableVideo(n.name)) out.push(n);
     }
-    if (reachesRoot) out.push(toMegaNode(id, file));
-  }
+  };
+  walk(folder);
   return out;
 }
 

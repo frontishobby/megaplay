@@ -23,10 +23,11 @@
   import { getStoredThumbnail } from '../thumbnails';
   import { showToast, showStreamErrorToast } from '../toast.svelte';
   import { listSceneVideoIds, collectCandidates, pickRandomVideo } from '../shorts';
+  import type { ShortsScope } from '../router.svelte';
 
   let { storage, scope, folderId, onExit } = $props<{
     storage: Storage;
-    scope: 'all' | 'folder';
+    scope: ShortsScope;
     folderId?: string;
     onExit: () => void;
   }>();
@@ -844,7 +845,7 @@
         <p class="text-xs text-gray-400 mt-0.5 flex items-center gap-2">
           <span class="inline-flex items-center gap-1">
             <Shuffle size={11} />
-            {scope === 'all' ? 'All videos' : 'This folder'}
+            {scope === 'folder' ? 'This folder' : folderId ? 'With subfolders' : 'All videos'}
           </span>
           <span>
             Scene {current.sceneIndex + 1}/{current.scenes.length}

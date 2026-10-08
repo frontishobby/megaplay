@@ -13,7 +13,8 @@
     clearSession,
     hasSavedSession,
   } from './lib/session';
-  import { router, navigate, type Route } from './lib/router.svelte';
+  import { router, navigate, type Route, type ShortsScope } from './lib/router.svelte';
+  import { collectCandidates, pickRandomVideo } from './lib/shorts';
   import { enqueueUpload } from './lib/upload.svelte';
   import UploadPanel from './lib/components/UploadPanel.svelte';
   import ToastHost from './lib/components/ToastHost.svelte';
@@ -21,7 +22,21 @@
   import { generateStrips } from './lib/strips';
   import { generateScenes } from './lib/scenes';
   import { resolveSceneAnalysisMode } from './lib/labeler';
-  import { Loader2, AlertCircle, Upload, FolderPlus, Folder, ImagePlus, Film, Shuffle, ListVideo, Pencil, Trash2 } from '@lucide/svelte';
+  import {
+    Loader2,
+    AlertCircle,
+    Upload,
+    FolderPlus,
+    Folder,
+    FolderTree as FolderTreeIcon,
+    ImagePlus,
+    Film,
+    Shuffle,
+    Smartphone,
+    Ellipsis,
+    Pencil,
+    Trash2,
+  } from '@lucide/svelte';
   import { SvelteSet } from 'svelte/reactivity';
   import './app.css';
 
@@ -254,20 +269,72 @@
     nodes.filter((n) => n.type === 'file' && MegaService.isVideo(n.name))
   );
 
-  // Folder shorts covers the whole subtree, so the button should light up even
-  // when the videos only live in subfolders.
-  const hasSubtreeVideos = $derived.by(() => {
+  // Shorts and shuffle share one scope toggle: the open folder's own videos,
+  // or it plus every subfolder (which, at root, is the whole account).
+  const SUBFOLDERS_KEY = 'megastream.includeSubfolders';
+  let includeSubfolders = $state(readIncludeSubfolders());
+  const playScope = $derived<ShortsScope>(includeSubfolders ? 'tree' : 'folder');
+
+  function readIncludeSubfolders(): boolean {
+    try {
+      return localStorage.getItem(SUBFOLDERS_KEY) !== '0';
+    } catch {
+      return true;
+    }
+  }
+
+  function toggleSubfolders() {
+    includeSubfolders = !includeSubfolders;
+    try {
+      localStorage.setItem(SUBFOLDERS_KEY, includeSubfolders ? '1' : '0');
+    } catch {}
+  }
+
+  const playPool = $derived.by<MegaNode[]>(() => {
     void nodes; // re-run on structural changes
-    const f = currentFolder;
-    if (!f) return false;
-    const walk = (folder: MegaFile): boolean =>
-      MegaService.listChildren(folder).some(
-        (child) =>
-          (child.type === 'file' && MegaService.isVideo(child.name)) ||
-          (child.type === 'folder' && walk(child.node))
-      );
-    return walk(f);
+    void treeVersion;
+    if (!storage || !currentFolder) return [];
+    return collectCandidates(storage, playScope, currentFolderId ?? undefined);
   });
+
+  function handleShorts() {
+    openShorts(
+      currentFolderId
+        ? { kind: 'shorts', scope: playScope, folderId: currentFolderId }
+        : { kind: 'shorts', scope: playScope }
+    );
+  }
+
+  // Remember the last few picks so repeated shuffles don't bounce between the
+  // same videos; never more than pool-1, or a small pool would have no fresh pick.
+  let recentShuffles: string[] = [];
+
+  function handleShuffle() {
+    const pick = pickRandomVideo(playPool, recentShuffles);
+    if (!pick) return;
+    recentShuffles = [pick.id, ...recentShuffles].slice(0, Math.min(5, playPool.length - 1));
+    navigate({ kind: 'file', id: pick.id });
+  }
+
+  // Folder maintenance actions live behind a "⋯" menu to keep the toolbar short.
+  let actionsOpen = $state(false);
+  let actionsEl = $state<HTMLElement | null>(null);
+
+  function handleWindowClick(e: MouseEvent) {
+    if (actionsOpen && actionsEl && !actionsEl.contains(e.target as Node)) actionsOpen = false;
+  }
+
+  function handleWindowKeydown(e: KeyboardEvent) {
+    if (e.key === 'Escape') actionsOpen = false;
+  }
+
+  const menuItemClass =
+    'flex w-full items-center gap-3 px-3.5 py-2 text-sm text-left transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
+
+  function runAction(action: () => void) {
+    actionsOpen = false;
+    action();
+  }
 
   async function handleGenerateThumbnails() {
     if (!storage || thumbGen) return;
@@ -575,6 +642,8 @@
 </script>
 
 <svelte:window
+  onclick={handleWindowClick}
+  onkeydown={handleWindowKeydown}
   ondragenter={handleWindowDragEnter}
   ondragover={handleWindowDragOver}
   ondragleave={handleWindowDragLeave}
@@ -657,95 +726,149 @@
               <div class="text-center py-20 text-gray-500">No videos match your search.</div>
             {/if}
           {:else}
-          <div class="flex flex-wrap justify-end mb-4 gap-2">
-            <button
-              type="button"
-              onclick={() => openShorts({ kind: 'shorts', scope: 'all' })}
-              class="inline-flex items-center gap-2 bg-gray-800 hover:bg-gray-700 text-gray-100 text-sm font-medium px-4 py-2 rounded-full transition-colors"
-            >
-              <Shuffle size={16} />
-              <span>Random shorts</span>
-            </button>
-            <button
-              type="button"
-              onclick={() =>
-                currentFolderId &&
-                openShorts({ kind: 'shorts', scope: 'folder', folderId: currentFolderId })}
-              disabled={!currentFolderId || !hasSubtreeVideos}
-              class="inline-flex items-center gap-2 bg-gray-800 hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed text-gray-100 text-sm font-medium px-4 py-2 rounded-full transition-colors"
-            >
-              <ListVideo size={16} />
-              <span>Folder shorts</span>
-            </button>
-            <button
-              type="button"
-              onclick={handleGenerateScenes}
-              disabled={!currentFolder || !!sceneGen || videoNodes.length === 0}
-              class="inline-flex items-center gap-2 bg-gray-800 hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed text-gray-100 text-sm font-medium px-4 py-2 rounded-full transition-colors"
-            >
-              {#if sceneGen}
-                <Loader2 size={16} class="animate-spin" />
-                <span>Scenes {sceneGen.done}/{sceneGen.total}</span>
-              {:else}
-                <Film size={16} />
-                <span>Detect scenes</span>
-              {/if}
-            </button>
-            <button
-              type="button"
-              onclick={handleGenerateThumbnails}
-              disabled={!currentFolder || !!thumbGen || videoNodes.length === 0}
-              class="inline-flex items-center gap-2 bg-gray-800 hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed text-gray-100 text-sm font-medium px-4 py-2 rounded-full transition-colors"
-            >
-              {#if thumbGen}
-                <Loader2 size={16} class="animate-spin" />
-                <span>Thumbnails {thumbGen.done}/{thumbGen.total}</span>
-              {:else}
-                <ImagePlus size={16} />
-                <span>Generate thumbnails</span>
-              {/if}
-            </button>
-            <button
-              type="button"
-              onclick={handleRenameFolder}
-              disabled={pathFolders.length < 2 || renamingFolder}
-              class="inline-flex items-center gap-2 bg-gray-800 hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed text-gray-100 text-sm font-medium px-4 py-2 rounded-full transition-colors"
-            >
-              <Pencil size={16} />
-              <span>Rename folder</span>
-            </button>
-            <button
-              type="button"
-              onclick={handleDeleteFolder}
-              disabled={pathFolders.length < 2 || deletingFolder}
-              class="inline-flex items-center gap-2 bg-gray-800 hover:bg-red-900/40 disabled:opacity-50 disabled:cursor-not-allowed text-red-400 text-sm font-medium px-4 py-2 rounded-full transition-colors"
-            >
-              {#if deletingFolder}
-                <Loader2 size={16} class="animate-spin" />
-                <span>Deleting…</span>
-              {:else}
-                <Trash2 size={16} />
-                <span>Delete folder</span>
-              {/if}
-            </button>
-            <button
-              type="button"
-              onclick={handleCreateFolder}
-              disabled={!currentFolder || creatingFolder}
-              class="inline-flex items-center gap-2 bg-gray-800 hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed text-gray-100 text-sm font-medium px-4 py-2 rounded-full transition-colors"
-            >
-              <FolderPlus size={16} />
-              <span>New folder</span>
-            </button>
-            <button
-              type="button"
-              onclick={handleUploadClick}
-              disabled={!currentFolder}
-              class="inline-flex items-center gap-2 bg-red-600 hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium px-4 py-2 rounded-full transition-colors"
-            >
-              <Upload size={16} />
-              <span>Upload</span>
-            </button>
+          <div class="flex flex-wrap items-center mb-4 gap-2">
+            <!-- Playback: shorts and shuffle both follow the subfolder toggle
+                 at the end of the group. -->
+            <div class="inline-flex items-center gap-1 bg-gray-800 rounded-full p-1">
+              <button
+                type="button"
+                onclick={handleShorts}
+                disabled={playPool.length === 0}
+                title="Swipe through random scenes"
+                class="inline-flex items-center gap-2 hover:bg-gray-700 disabled:opacity-50 disabled:hover:bg-transparent disabled:cursor-not-allowed text-gray-100 text-sm font-medium px-3 py-1.5 rounded-full transition-colors"
+              >
+                <Smartphone size={16} />
+                <span>Shorts</span>
+              </button>
+              <button
+                type="button"
+                onclick={handleShuffle}
+                disabled={playPool.length === 0}
+                title="Open a random video"
+                class="inline-flex items-center gap-2 hover:bg-gray-700 disabled:opacity-50 disabled:hover:bg-transparent disabled:cursor-not-allowed text-gray-100 text-sm font-medium px-3 py-1.5 rounded-full transition-colors"
+              >
+                <Shuffle size={16} />
+                <span>Shuffle</span>
+              </button>
+              <span class="w-px h-5 bg-gray-700" aria-hidden="true"></span>
+              <button
+                type="button"
+                onclick={toggleSubfolders}
+                aria-pressed={includeSubfolders}
+                title={includeSubfolders
+                  ? 'Shorts and shuffle include subfolders'
+                  : 'Shorts and shuffle use this folder only'}
+                class="inline-flex items-center gap-2 text-sm font-medium px-3 py-1.5 rounded-full transition-colors {includeSubfolders
+                  ? 'bg-gray-700 text-gray-100'
+                  : 'text-gray-500 hover:text-gray-300 hover:bg-gray-700/50'}"
+              >
+                <FolderTreeIcon size={16} class={includeSubfolders ? 'text-blue-400' : ''} />
+                <span>Subfolders</span>
+              </button>
+            </div>
+
+            {#if sceneGen}
+              <span class="inline-flex items-center gap-1.5 text-xs text-gray-400 px-1">
+                <Loader2 size={14} class="animate-spin" />
+                Scenes {sceneGen.done}/{sceneGen.total}
+              </span>
+            {/if}
+            {#if thumbGen}
+              <span class="inline-flex items-center gap-1.5 text-xs text-gray-400 px-1">
+                <Loader2 size={14} class="animate-spin" />
+                Thumbnails {thumbGen.done}/{thumbGen.total}
+              </span>
+            {/if}
+            {#if deletingFolder}
+              <span class="inline-flex items-center gap-1.5 text-xs text-red-400 px-1">
+                <Loader2 size={14} class="animate-spin" />
+                Deleting folder…
+              </span>
+            {/if}
+
+            <div class="ml-auto flex items-center gap-2">
+              <div class="relative" bind:this={actionsEl}>
+                <button
+                  type="button"
+                  onclick={() => (actionsOpen = !actionsOpen)}
+                  aria-label="Folder actions"
+                  aria-haspopup="menu"
+                  aria-expanded={actionsOpen}
+                  class="inline-flex items-center justify-center w-9 h-9 rounded-full transition-colors {actionsOpen
+                    ? 'bg-gray-700 text-white'
+                    : 'bg-gray-800 hover:bg-gray-700 text-gray-200'}"
+                >
+                  <Ellipsis size={18} />
+                </button>
+                {#if actionsOpen}
+                  <div
+                    role="menu"
+                    class="absolute right-0 top-full mt-2 z-20 w-56 py-1.5 bg-gray-900 border border-gray-800 rounded-xl shadow-xl"
+                  >
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onclick={() => runAction(handleGenerateScenes)}
+                      disabled={!currentFolder || !!sceneGen || videoNodes.length === 0}
+                      class="{menuItemClass} text-gray-200 enabled:hover:bg-gray-800"
+                    >
+                      <Film size={16} />
+                      <span>Detect scenes</span>
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onclick={() => runAction(handleGenerateThumbnails)}
+                      disabled={!currentFolder || !!thumbGen || videoNodes.length === 0}
+                      class="{menuItemClass} text-gray-200 enabled:hover:bg-gray-800"
+                    >
+                      <ImagePlus size={16} />
+                      <span>Generate thumbnails</span>
+                    </button>
+                    <div class="my-1.5 border-t border-gray-800"></div>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onclick={() => runAction(handleCreateFolder)}
+                      disabled={!currentFolder || creatingFolder}
+                      class="{menuItemClass} text-gray-200 enabled:hover:bg-gray-800"
+                    >
+                      <FolderPlus size={16} />
+                      <span>New folder</span>
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onclick={() => runAction(handleRenameFolder)}
+                      disabled={pathFolders.length < 2 || renamingFolder}
+                      class="{menuItemClass} text-gray-200 enabled:hover:bg-gray-800"
+                    >
+                      <Pencil size={16} />
+                      <span>Rename folder</span>
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onclick={() => runAction(handleDeleteFolder)}
+                      disabled={pathFolders.length < 2 || deletingFolder}
+                      class="{menuItemClass} text-red-400 enabled:hover:bg-red-900/30"
+                    >
+                      <Trash2 size={16} />
+                      <span>Delete folder</span>
+                    </button>
+                  </div>
+                {/if}
+              </div>
+              <button
+                type="button"
+                onclick={handleUploadClick}
+                disabled={!currentFolder}
+                class="inline-flex items-center gap-2 bg-red-600 hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium px-4 py-2 rounded-full transition-colors"
+              >
+                <Upload size={16} />
+                <span>Upload</span>
+              </button>
+            </div>
           </div>
 
           <!-- Subfolder shortcuts for the current folder; on narrow screens this

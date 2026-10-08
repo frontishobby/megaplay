@@ -2,16 +2,26 @@ export type Route =
   | { kind: 'home' }
   | { kind: 'file'; id: string }
   | { kind: 'folder'; id: string }
-  | { kind: 'shorts'; scope: 'all' | 'folder'; folderId?: string };
+  // `folder` = the folder's own videos, `tree` = it plus every subfolder.
+  // A missing folderId means the cloud root.
+  | { kind: 'shorts'; scope: ShortsScope; folderId?: string };
+
+export type ShortsScope = 'folder' | 'tree';
 
 function parse(hash: string): Route {
   let m = hash.match(/^#\/file\/(.+)$/);
   if (m) return { kind: 'file', id: decodeURIComponent(m[1]) };
   m = hash.match(/^#\/folder\/(.+)$/);
   if (m) return { kind: 'folder', id: decodeURIComponent(m[1]) };
-  m = hash.match(/^#\/shorts\/folder\/(.+)$/);
-  if (m) return { kind: 'shorts', scope: 'folder', folderId: decodeURIComponent(m[1]) };
-  if (hash === '#/shorts/all') return { kind: 'shorts', scope: 'all' };
+  m = hash.match(/^#\/shorts\/(folder|tree)(?:\/(.+))?$/);
+  if (m) {
+    const scope = m[1] as ShortsScope;
+    return m[2]
+      ? { kind: 'shorts', scope, folderId: decodeURIComponent(m[2]) }
+      : { kind: 'shorts', scope };
+  }
+  // Pre-scope links: the old "Random shorts" covered the whole account.
+  if (hash === '#/shorts/all') return { kind: 'shorts', scope: 'tree' };
   return { kind: 'home' };
 }
 
@@ -39,10 +49,9 @@ export function navigate(r: Route) {
   }
   let next: string;
   if (r.kind === 'shorts') {
-    next =
-      r.scope === 'folder' && r.folderId
-        ? `#/shorts/folder/${encodeURIComponent(r.folderId)}`
-        : '#/shorts/all';
+    next = r.folderId
+      ? `#/shorts/${r.scope}/${encodeURIComponent(r.folderId)}`
+      : `#/shorts/${r.scope}`;
   } else {
     const prefix = r.kind === 'file' ? '#/file/' : '#/folder/';
     next = `${prefix}${encodeURIComponent(r.id)}`;
