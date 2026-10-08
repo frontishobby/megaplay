@@ -17,6 +17,7 @@
   import { THUMB_FOLDER, saveThumbnailFrame, regenerateThumbnail } from '../thumbnails';
   import type { Storage, MutableFile, File as MegaFile } from 'megajs';
   import { showToast } from '../toast.svelte';
+  import PlayerControls from './PlayerControls.svelte';
 
   let { node, onBack } = $props<{
     node: MegaNode;
@@ -28,6 +29,10 @@
   let streamUrl = $state<string | null>(null);
 
   let videoEl: HTMLVideoElement | undefined = $state();
+  let playerBox: HTMLDivElement | undefined = $state();
+  // Custom controls (with hover previews on the seek bar) only make sense
+  // with a mouse; touch devices keep the browser's own controls.
+  const desktop = matchMedia('(hover: hover) and (pointer: fine)').matches;
   let resolution = $state<string | null>(null);
   let duration = $state<number | null>(null);
 
@@ -554,7 +559,10 @@
     <span>Back</span>
   </button>
 
-  <div class="w-full bg-black overflow-hidden aspect-video flex items-center justify-center relative">
+  <div
+    bind:this={playerBox}
+    class="w-full bg-black overflow-hidden aspect-video flex items-center justify-center relative"
+  >
     {#if error}
       <div class="bg-gray-800 p-8 rounded-lg text-center max-w-md border border-red-900/50">
         <p class="text-red-400 mb-4 font-medium">{error}</p>
@@ -571,7 +579,7 @@
         <video
           bind:this={videoEl}
           src={streamUrl}
-          controls
+          controls={!desktop}
           autoplay
           playsinline
           onloadedmetadata={onLoadedMetadata}
@@ -590,6 +598,15 @@
           <div class="w-12 h-12 border-4 border-red-500 border-t-transparent rounded-full animate-spin"></div>
           <p class="text-gray-400 animate-pulse">Preparing stream...</p>
         </div>
+      {/if}
+      {#if desktop && videoEl && playerBox && !loading}
+        <PlayerControls
+          video={videoEl}
+          container={playerBox}
+          {node}
+          {scenes}
+          hasSubtitles={subtitleTracks.length > 0}
+        />
       {/if}
     {/if}
   </div>

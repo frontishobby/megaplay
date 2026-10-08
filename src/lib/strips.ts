@@ -106,7 +106,7 @@ export async function getStoredStrip(
 }
 
 /** Scene midpoints to capture, evenly thinned to MAX_FRAMES. */
-function pickTimes(scenes: SceneData): number[] {
+export function pickTimes(scenes: SceneData): number[] {
   const list = scenes.scenes;
   if (list.length === 0) return [];
   const idxs =
