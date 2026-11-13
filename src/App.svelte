@@ -616,6 +616,26 @@
     if (storage) refreshQuota(storage);
   }
 
+  // Card shortcut for pulling a video back out to Root without opening it.
+  async function handleMoveToRoot(node: MegaNode) {
+    const root = rootFolder;
+    const source = node.node as unknown as MegaFile;
+    if (!root || source.parent === root) return;
+    const oldParent = source.parent;
+    await MegaService.moveFile(source, root);
+    // Same local re-parenting as handleFolderMove: the server event can lag.
+    if (oldParent?.children) {
+      (oldParent as unknown as { children: MegaFile[] }).children = oldParent.children.filter(
+        (c) => c !== source
+      );
+    }
+    const r = root as unknown as { children?: MegaFile[] };
+    r.children = [...(r.children ?? []), source];
+    (source as unknown as { parent?: MegaFile }).parent = root;
+    treeVersion++;
+    if (currentFolder) nodes = MegaService.listChildren(currentFolder);
+  }
+
   function handleSelect(node: MegaNode) {
     if (node.type === 'folder') {
       navigate({ kind: 'folder', id: node.id });
@@ -719,7 +739,12 @@
             {#if searchResults.length > 0}
               <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
                 {#each searchResults as node (node.id)}
-                  <FileCard {node} onSelect={handleSelect} onDeleted={handleDeleted} />
+                  <FileCard
+                  {node}
+                  onSelect={handleSelect}
+                  onDeleted={handleDeleted}
+                  onMoveToRoot={node.node.parent === rootFolder ? undefined : handleMoveToRoot}
+                />
                 {/each}
               </div>
             {:else}
@@ -924,7 +949,12 @@
           {#if visibleFileNodes.length > 0}
             <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
               {#each visibleFileNodes as node (node.id)}
-                <FileCard {node} onSelect={handleSelect} onDeleted={handleDeleted} />
+                <FileCard
+                  {node}
+                  onSelect={handleSelect}
+                  onDeleted={handleDeleted}
+                  onMoveToRoot={node.node.parent === rootFolder ? undefined : handleMoveToRoot}
+                />
               {/each}
             </div>
           {:else if fileNodes.length > 0}

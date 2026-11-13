@@ -1,15 +1,28 @@
 <script lang="ts">
-  import { File, Folder, Play, StickyNote, Pencil, Trash2, Check, X, Loader2 } from '@lucide/svelte';
+  import {
+    File,
+    Folder,
+    FolderRoot,
+    Play,
+    StickyNote,
+    Pencil,
+    Trash2,
+    Check,
+    X,
+    Loader2,
+  } from '@lucide/svelte';
   import { untrack } from 'svelte';
   import type { MegaNode } from '../mega';
   import { MegaService } from '../mega';
   import { getStoredThumbnail, thumbnailEvents } from '../thumbnails';
   import { getStoredStrip, type StripData } from '../strips';
 
-  let { node, onSelect, onDeleted } = $props<{
+  let { node, onSelect, onDeleted, onMoveToRoot } = $props<{
     node: MegaNode;
     onSelect: (node: MegaNode) => void;
     onDeleted: (node: MegaNode) => void;
+    /** Moves the node to Root. Omitted when it already lives there. */
+    onMoveToRoot?: (node: MegaNode) => Promise<void>;
   }>();
 
   const isVideo = $derived(node.type === 'file' && MegaService.isVideo(node.name));
@@ -228,6 +241,22 @@
     }
   }
 
+  let movingToRoot = $state(false);
+
+  async function handleMoveToRoot(e: MouseEvent) {
+    e.stopPropagation();
+    if (movingToRoot || !onMoveToRoot) return;
+    movingToRoot = true;
+    deleteError = null;
+    try {
+      await onMoveToRoot(node);
+    } catch (err) {
+      deleteError = err instanceof Error ? err.message : 'Failed to move';
+    } finally {
+      movingToRoot = false;
+    }
+  }
+
   $effect(() => {
     if (!isVideo || !cardEl) return;
     let cancelled = false;
@@ -402,6 +431,22 @@
         >
           <Pencil size={12} />
         </button>
+        {#if onMoveToRoot}
+          <button
+            type="button"
+            onclick={handleMoveToRoot}
+            disabled={movingToRoot}
+            class="text-gray-500 hover:text-blue-400 p-0.5 rounded shrink-0 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity disabled:opacity-100"
+            title="Move to Root"
+            aria-label="Move to Root"
+          >
+            {#if movingToRoot}
+              <Loader2 size={12} class="animate-spin" />
+            {:else}
+              <FolderRoot size={12} />
+            {/if}
+          </button>
+        {/if}
         <button
           type="button"
           onclick={handleDelete}
